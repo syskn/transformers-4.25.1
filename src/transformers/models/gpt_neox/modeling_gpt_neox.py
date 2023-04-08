@@ -674,11 +674,11 @@ class GPTNeoXForCausalLM(GPTNeoXPreTrainedModel):
             attentions=outputs.attentions,
         )
 
-    def prepare_inputs_for_generation(self, input_ids, past_key_values=None, attention_mask=None, **kwargs):
+    def prepare_inputs_for_generation(self, input_ids, past=None, attention_mask=None, **kwargs):
         input_shape = input_ids.shape
 
         # cut decoder_input_ids if past is used
-        if past_key_values and past_key_values[0] is not None:
+        if past and past[0] is not None:
             input_ids = input_ids[:, -1:]
 
         position_ids = kwargs.get("position_ids", None)
@@ -686,7 +686,7 @@ class GPTNeoXForCausalLM(GPTNeoXPreTrainedModel):
             # create position_ids on the fly for batch generation
             position_ids = attention_mask.long().cumsum(-1) - 1
             position_ids.masked_fill_(attention_mask == 0, 1)
-            if past_key_values:
+            if past:
                 position_ids = position_ids[:, -1].unsqueeze(-1)
 
         # if model is used as a decoder in encoder-decoder model, the decoder attention mask is created on the fly
@@ -697,7 +697,7 @@ class GPTNeoXForCausalLM(GPTNeoXPreTrainedModel):
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "position_ids": position_ids,
-            "past_key_values": past_key_values,
+            "past_key_values": past,
         }
 
     def _reorder_cache(self, past_key_values, beam_idx):
