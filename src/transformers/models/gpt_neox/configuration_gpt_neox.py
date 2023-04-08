@@ -32,11 +32,8 @@ class GPTNeoXConfig(PretrainedConfig):
     GPTNeoX model according to the specified arguments, defining the model architecture. Instantiating a configuration
     with the defaults will yield a similar configuration to that of the GPTNeoX
     [EleutherAI/gpt-neox-20b](https://huggingface.co/EleutherAI/gpt-neox-20b) architecture.
-
     Configuration objects inherit from [`PretrainedConfig`] and can be used to control the model outputs. Read the
     documentation from [`PretrainedConfig`] for more information.
-
-
     Args:
         vocab_size (`int`, *optional*, defaults to 50432):
             Vocabulary size of the GPTNeoX model. Defines the number of different tokens that can be represented by the
@@ -70,16 +67,12 @@ class GPTNeoXConfig(PretrainedConfig):
             Whether to use a "parallel" formulation in each Transformer layer, which can provide a slight training
             speedup at large scales (e.g. 20B).
         Example:
-
     ```python
     >>> from transformers import GPTNeoXConfig, GPTNeoXModel
-
     >>> # Initializing a GPTNeoX gpt-neox-20b style configuration
     >>> configuration = GPTNeoXConfig()
-
     >>> # Initializing a model (with random weights) from the gpt-neox-20b style configuration
     >>> model = GPTNeoXModel(configuration)  # doctest: +SKIP
-
     >>> # Accessing the model configuration
     >>> configuration = model.config  # doctest: +SKIP
     ```"""
@@ -103,7 +96,7 @@ class GPTNeoXConfig(PretrainedConfig):
         eos_token_id=2,
         tie_word_embeddings=False,
         use_parallel_residual=True,
-        **kwargs
+        **kwargs,
     ):
         super().__init__(bos_token_id=bos_token_id, eos_token_id=eos_token_id, **kwargs)
         self.vocab_size = vocab_size

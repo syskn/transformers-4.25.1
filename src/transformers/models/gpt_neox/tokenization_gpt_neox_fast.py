@@ -45,31 +45,23 @@ class GPTNeoXTokenizerFast(PreTrainedTokenizerFast):
     """
     Construct a "fast" GPT-NeoX-20B tokenizer (backed by HuggingFace's *tokenizers* library). Based on byte-level
     Byte-Pair-Encoding.
-
     This tokenizer has been trained to treat spaces like parts of the tokens (a bit like sentencepiece) so a word will
     be encoded differently whether it is at the beginning of the sentence (without space) or not:
-
-    ```
+    ```python
     >>> from transformers import GPTNeoXTokenizerFast
     >>> tokenizer = GPTNeoXTokenizerFast.from_pretrained("gpt2")
-    >>> tokenizer("Hello world")['input_ids']
+    >>> tokenizer("Hello world")["input_ids"]
     [15496, 995]
-    >>> tokenizer(" Hello world")['input_ids']
+    >>> tokenizer(" Hello world")["input_ids"]
     [18435, 995]
     ```
-
     You can get around that behavior by passing `add_prefix_space=True` when instantiating this tokenizer, but since
     the model was not pretrained this way, it might yield a decrease in performance.
-
     <Tip>
-
     When used with `is_split_into_words=True`, this tokenizer needs to be instantiated with `add_prefix_space=True`.
-
     </Tip>
-
     This tokenizer inherits from [`PreTrainedTokenizerFast`] which contains most of the main methods. Users should
     refer to this superclass for more information regarding those methods.
-
     Args:
         vocab_file (`str`):
             Path to the vocabulary file.
@@ -106,7 +98,7 @@ class GPTNeoXTokenizerFast(PreTrainedTokenizerFast):
         bos_token="<|endoftext|>",
         eos_token="<|endoftext|>",
         add_prefix_space=False,
-        **kwargs
+        **kwargs,
     ):
         super().__init__(
             vocab_file,
