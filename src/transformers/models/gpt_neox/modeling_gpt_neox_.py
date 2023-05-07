@@ -20,22 +20,6 @@ import torch
 import torch.utils.checkpoint
 from torch import nn
 from torch.nn import CrossEntropyLoss
-import torch.nn.functional as F
-
-FUSE_LN = True
-FUSE_MLP = True
-FLASH_ATTN = True
-FLASH_CROSS_ATTN = True
-
-if FLASH_ATTN:
-    from flash_attn.flash_attention import FlashAttention
-if FLASH_CROSS_ATTN:
-    from flash_attn.modules.mha import FlashCrossAttention
-if FUSE_MLP:
-    from flash_attn.ops.fused_dense import fused_dense_gelu_dense_func
-if FUSE_LN:
-    from flash_attn.ops.layer_norm import dropout_add_layer_norm
-from einops import rearrange
 
 from ...activations import ACT2FN
 from ...file_utils import (
@@ -108,24 +92,21 @@ class GPTNeoXAttention(nn.Module):
         )
         self.register_buffer("masked_bias", torch.tensor(-1e9))
         self.rotary_emb = RotaryEmbedding(
-            self.rotary_ndims, config.max_position_embeddings, base=config.rotary_emb_base, device = 'cuda:0'
+            self.rotary_ndims, config.max_position_embeddings, base=config.rotary_emb_base
         )
         self.norm_factor = torch.sqrt(torch.tensor(self.head_size, dtype=torch.float32)).to(torch.get_default_dtype())
         self.query_key_value = nn.Linear(config.hidden_size, 3 * config.hidden_size)
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
-        if FLASH_ATTN:
-            self.flash_attn = FlashAttention()
-        if FLASH_CROSS_ATTN:
-            self.flash_cross_attn = FlashCrossAttention()
 
     def forward(
         self,
-        hidden_states,
-        attention_mask,
-        head_mask=None,
-        layer_past=None,
-        use_cache=False,
-        output_attentions=False,
+        hidden_states: torch.FloatTensor,
+        attention_mask: torch.FloatTensor,
+        position_ids: torch.LongTensor,
+        head_mask: Optional[torch.FloatTensor] = None,
+        layer_past: Optional[Tuple[torch.Tensor]] = None,
+        use_cache: Optional[bool] = False,
+        output_attentions: Optional[bool] = False,
     ):
         has_layer_past = layer_past is not None
 
@@ -152,12 +133,10 @@ class GPTNeoXAttention(nn.Module):
 
         # Compute token offset for rotary embeddings (when decoding)
         seq_len = key.shape[-2]
-        offset = 0
         if has_layer_past:
-            offset = layer_past[0].shape[-2]
-            seq_len += offset
+            seq_len += layer_past[0].shape[-2]
         cos, sin = self.rotary_emb(value, seq_len=seq_len)
-        query, key = apply_rotary_pos_emb(query_rot, key_rot, cos, sin, offset=offset)
+        query, key = apply_rotary_pos_emb(query_rot, key_rot, cos, sin, position_ids)
         query = torch.cat((query, query_pass), dim=-1)
         key = torch.cat((key, key_pass), dim=-1)
 
@@ -165,38 +144,9 @@ class GPTNeoXAttention(nn.Module):
         if has_layer_past:
             past_key = layer_past[0]
             past_value = layer_past[1]
-            index = layer_past[2]
-            if True:
-                key = torch.cat((past_key, key), dim=-2)
-                value = torch.cat((past_value, value), dim=-2)
-                present = (key, value, key.shape[-2]) if use_cache else None
-            else:
-                key_len = key.shape[-2]
-                if past_key.shape[-2] <= key_len + index:
-                    new_key = F.pad(past_key, (0, 0, 0, 2 * index))
-                    new_value = F.pad(past_value, (0, 0, 0, 2 * index))
-                else:
-                    new_key = past_key
-                    new_value = past_value
-                new_key[:, :, index : index + key_len, :] = key
-                new_value[:, :, index : index + key_len, :] = value
-                index = index + key_len
-                # key = new_key[:, :, :index, :]
-                # value = new_value[:, :, :index, :]
-                key = new_key
-                value = new_value
-                present = (new_key, new_value, index) if use_cache else None
-            
-        else:
-            if True:
-                present = (key, value, key.shape[-2]) if use_cache else None
-            else:
-                if use_cache:
-                    index = key.shape[-2]
-                    new_key = F.pad(key, (0, 0, 0, 2 * index))
-                    new_value = F.pad(value, (0, 0, 0, 2 * index))
-                    present = (new_key, new_value, index)
-                present = None
+            key = torch.cat((past_key, key), dim=-2)
+            value = torch.cat((past_value, value), dim=-2)
+        present = (key, value) if use_cache else None
 
         # Compute attention
         attn_output, attn_weights = self._attn(query, key, value, attention_mask, head_mask)
@@ -241,77 +191,46 @@ class GPTNeoXAttention(nn.Module):
         # compute causal mask from causal mask buffer
         batch_size, num_attention_heads, query_length, attn_head_size = query.size()
         key_length = key.size(-2)
-        if query_length == key_length and FLASH_ATTN:
-            # B H S D -> B S 3 H D
-            qkv = torch.stack([query, key, value], dim=2) # B H 3 S D
-            qkv = torch.swapaxes(qkv, 1, 3) # B S 3 H D
-            attn_output, _ = self.flash_attn(qkv, causal=True) # B S H D
-            attn_output = torch.swapaxes(attn_output, 1, 2)
 
-            return attn_output, _
-        elif query_length != key_length and FLASH_CROSS_ATTN:
-            q = torch.swapaxes(query, 1, 2) # B S H D
-            kv = torch.stack([key, value], dim=2) # B H 3 S D
-            kv = torch.swapaxes(kv, 1, 3) # B S 3 H D
-            attn_output = self.flash_cross_attn(q, kv, causal=True) # B S H D
-            attn_output = torch.swapaxes(attn_output, 1, 2)
-            # THIS IS BROKEN
-            # q_seqlen = query.shape[-2]
-            # kv_seqlen = key.shape[-2]
-            # # B H S D -> (B S) 2 H D
-            # # kv = torch.stack([key, value], dim=2)
-            # # kv = rearrange(kv, 'b h t s d -> (b s) t h d')
-            # q = rearrange(query, 'b h s d -> (b s) h d') # B S H D
-            # k = rearrange(key, 'b h s d -> (b s) h d')
-            # v = rearrange(value, 'b h s d -> (b s) h d')
+        causal_mask = self.bias[:, :, key_length - query_length : key_length, :key_length]
 
-            # # cu_seqlens_q = torch.arange(0, (batch_size + 1) * q_seqlen, step=q_seqlen, dtype=torch.int32, device=q.device)
-            # # cu_seqlens_kv = torch.arange(0, (batch_size + 1) * kv_seqlen, step=kv_seqlen, dtype=torch.int32, device=q.device)
+        query = query.view(batch_size * num_attention_heads, query_length, attn_head_size)
+        key = key.view(batch_size * num_attention_heads, key_length, attn_head_size)
+        attn_scores = torch.zeros(
+            batch_size * num_attention_heads,
+            query_length,
+            key_length,
+            dtype=query.dtype,
+            device=key.device,
+        )
+        attn_scores = torch.baddbmm(
+            attn_scores,
+            query,
+            key.transpose(1, 2),
+            beta=1.0,
+            alpha=(torch.tensor(1.0, dtype=self.norm_factor.dtype, device=self.norm_factor.device) / self.norm_factor),
+        )
+        attn_scores = attn_scores.view(batch_size, num_attention_heads, query_length, key_length)
 
-            # attn_output = flash_attn_unpadded_func(q, k, v, cu_seqlens_q, cu_seqlens_k, q_seqlen, kv_seqlen, 0.0, softmax_scale=1.0, causal=True)
+        mask_value = torch.finfo(attn_scores.dtype).min
+        # Need to be a tensor, otherwise we get error: `RuntimeError: expected scalar type float but found double`.
+        # Need to be on the same device, otherwise `RuntimeError: ..., x and y to be on the same device`
+        mask_value = torch.tensor(mask_value, dtype=attn_scores.dtype).to(attn_scores.device)
+        attn_scores = torch.where(causal_mask, attn_scores, mask_value)
 
-            # attn_output = rearrange(attn_output, '(b s) h d -> b h s d', b = batch_size)
+        if attention_mask is not None:
+            # Apply the attention mask
+            attn_scores = attn_scores + attention_mask
 
-            return attn_output, None
-        else:
-            causal_mask = self.bias[:, :, key_length - query_length : key_length, :key_length]
+        attn_weights = nn.functional.softmax(attn_scores, dim=-1)
+        attn_weights = attn_weights.to(value.dtype)
 
-            query = query.view(batch_size * num_attention_heads, query_length, attn_head_size)
-            key = key.view(batch_size * num_attention_heads, key_length, attn_head_size)
-            attn_scores = torch.zeros(
-                batch_size * num_attention_heads,
-                query_length,
-                key_length,
-                dtype=query.dtype,
-                device=key.device,
-            )
-            attn_scores = torch.baddbmm(
-                attn_scores,
-                query,
-                key.transpose(1, 2),
-                beta=1.0,
-                alpha=(torch.tensor(1.0, dtype=self.norm_factor.dtype, device=self.norm_factor.device) / self.norm_factor),
-            )
-            attn_scores = attn_scores.view(batch_size, num_attention_heads, query_length, key_length)
-            mask_value = torch.finfo(attn_scores.dtype).min
-            # Need to be a tensor, otherwise we get error: `RuntimeError: expected scalar type float but found double`.
-            # Need to be on the same device, otherwise `RuntimeError: ..., x and y to be on the same device`
-            # mask_value = torch.tensor(mask_value, dtype=attn_scores.dtype, device=attn_scores.device) #.to(attn_scores.device)
-            attn_scores = torch.where(causal_mask, attn_scores, mask_value)
+        # Mask heads if we want to
+        if head_mask is not None:
+            attn_weights = attn_weights * head_mask
 
-            if attention_mask is not None:
-                # Apply the attention mask
-                attn_scores = attn_scores + attention_mask
-
-            attn_weights = nn.functional.softmax(attn_scores, dim=-1)
-            attn_weights = attn_weights #.to(value.dtype)
-
-            # Mask heads if we want to
-            if head_mask is not None:
-                attn_weights = attn_weights * head_mask
-
-            attn_output = torch.matmul(attn_weights, value)
-            return attn_output, attn_weights
+        attn_output = torch.matmul(attn_weights, value)
+        return attn_output, attn_weights
 
 
 def attention_mask_func(attention_scores, ltor_mask):
@@ -331,8 +250,8 @@ class RotaryEmbedding(torch.nn.Module):
         freqs = torch.einsum("i,j->ij", t, self.inv_freq)
         # Different from paper, but it uses a different permutation in order to obtain the same calculation
         emb = torch.cat((freqs, freqs), dim=-1)
-        self.cos_cached = emb.cos()[None, None, :, :].half()
-        self.sin_cached = emb.sin()[None, None, :, :].half()
+        self.cos_cached = emb.cos()[None, None, :, :]
+        self.sin_cached = emb.sin()[None, None, :, :]
 
     def forward(self, x, seq_len=None):
         # x: [bs, num_attention_heads, seq_len, head_size]
@@ -343,39 +262,23 @@ class RotaryEmbedding(torch.nn.Module):
             freqs = torch.einsum("i,j->ij", t, self.inv_freq)
             # Different from paper, but it uses a different permutation in order to obtain the same calculation
             emb = torch.cat((freqs, freqs), dim=-1).to(x.device)
-            self.cos_cached = emb.cos()[None, None, :, :].half()
-            self.sin_cached = emb.sin()[None, None, :, :].half()
-        # return self.cos_cached[:seq_len, ...].to(x.device), self.sin_cached[:seq_len, ...].to(x.device)
-        return self.cos_cached[:seq_len, ...], self.sin_cached[:seq_len, ...]
+            self.cos_cached = emb.cos()[None, None, :, :]
+            self.sin_cached = emb.sin()[None, None, :, :]
+        return self.cos_cached[:seq_len, ...].to(x.device), self.sin_cached[:seq_len, ...].to(x.device)
 
 
 def rotate_half(x):
-    x1, x2 = x.chunk(2, dim=-1)
+    """Rotates half the hidden dims of the input."""
+    x1 = x[..., : x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2 :]
     return torch.cat((-x2, x1), dim=-1)
 
 
-# def apply_rotary_emb_torch(x, cos, sin):
-#     """
-#     x: (batch_size, seqlen, nheads, headdim)
-#     cos, sin: (seqlen, rotary_dim / 2)
-#     """
-#     rotary_dim = cos.shape[-1] * 2
-#     assert rotary_dim <= x.shape[-1]
-#     cos = repeat(cos, 's d -> s 1 (2 d)')
-#     sin = repeat(sin, 's d -> s 1 (2 d)')
-#     return torch.cat([x[..., :rotary_dim] * cos + rotate_half(x[..., :rotary_dim]) * sin,
-#                       x[..., rotary_dim:]], dim=-1)
-
-# def rotate_half(x):
-#     """Rotates half the hidden dims of the input."""
-#     x1 = x[..., : x.shape[-1] // 2]
-#     x2 = x[..., x.shape[-1] // 2 :]
-#     return torch.cat((-x2, x1), dim=-1)
-
-
-def apply_rotary_pos_emb(q, k, cos, sin, offset: int = 0):
-    cos = cos[..., offset : q.shape[-2] + offset, :]
-    sin = sin[..., offset : q.shape[-2] + offset, :]
+def apply_rotary_pos_emb(q, k, cos, sin, position_ids):
+    gather_indices = position_ids[:, None, :, None]  # [bs, 1, seq_len, 1]
+    gather_indices = gather_indices.repeat(1, cos.shape[1], 1, cos.shape[3])
+    cos = torch.gather(cos.repeat(gather_indices.shape[0], 1, 1, 1), 2, gather_indices)
+    sin = torch.gather(sin.repeat(gather_indices.shape[0], 1, 1, 1), 2, gather_indices)
     q_embed = (q * cos) + (rotate_half(q) * sin)
     k_embed = (k * cos) + (rotate_half(k) * sin)
     return q_embed, k_embed
@@ -389,19 +292,10 @@ class GPTNeoXMLP(nn.Module):
         self.act = ACT2FN[config.hidden_act]
 
     def forward(self, hidden_states):
-        if not FUSE_MLP:
-            hidden_states = self.dense_h_to_4h(hidden_states)
-            hidden_states = self.act(hidden_states)
-            hidden_states = self.dense_4h_to_h(hidden_states)
-            return hidden_states
-        else:
-            return fused_dense_gelu_dense_func(
-                hidden_states,
-                self.dense_h_to_4h.weight, self.dense_4h_to_h.weight,
-                self.dense_h_to_4h.bias, self.dense_4h_to_h.bias,
-                save_pre_act=False,
-                return_residual=False
-            )
+        hidden_states = self.dense_h_to_4h(hidden_states)
+        hidden_states = self.act(hidden_states)
+        hidden_states = self.dense_4h_to_h(hidden_states)
+        return hidden_states
 
 
 class GPTNeoXLayer(nn.Module):
@@ -415,16 +309,18 @@ class GPTNeoXLayer(nn.Module):
 
     def forward(
         self,
-        hidden_states,
-        attention_mask=None,
-        head_mask=None,
-        use_cache=False,
-        layer_past=None,
-        output_attentions=False,
+        hidden_states: Optional[torch.FloatTensor],
+        attention_mask: Optional[torch.FloatTensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        head_mask: Optional[torch.FloatTensor] = None,
+        use_cache: Optional[bool] = False,
+        layer_past: Optional[Tuple[torch.Tensor]] = None,
+        output_attentions: Optional[bool] = False,
     ):
         attention_layer_outputs = self.attention(
             self.input_layernorm(hidden_states),
             attention_mask=attention_mask,
+            position_ids=position_ids,
             layer_past=layer_past,
             head_mask=head_mask,
             use_cache=use_cache,
@@ -442,17 +338,9 @@ class GPTNeoXLayer(nn.Module):
             # pseudocode:
             # x = x + attn(ln1(x))
             # x = x + mlp(ln2(x))
-            if not FUSE_LN:
-                attn_output = attn_output + hidden_states
-                mlp_output = self.mlp(self.post_attention_layernorm(attn_output))
-                hidden_states = mlp_output + attn_output
-            else:
-                hidden_states, residual = dropout_add_layer_norm(
-                    hidden_states, attn_output, self.post_attention_layernorm.weight, self.post_attention_layernorm.bias,
-                    0.0, self.post_attention_layernorm.eps,
-                    rowscale=None, prenorm=False, residual_in_fp32=False
-                )
-                hidden_states = self.mlp(hidden_states) + residual
+            attn_output = attn_output + hidden_states
+            mlp_output = self.mlp(self.post_attention_layernorm(attn_output))
+            hidden_states = mlp_output + attn_output
 
         if use_cache:
             outputs = (hidden_states,) + outputs  # hidden_states, present, (attn_weights)
@@ -466,7 +354,6 @@ GPT_NEOX_START_DOCSTRING = r"""
     This model is a PyTorch [torch.nn.Module](https://pytorch.org/docs/stable/nn.html#torch.nn.Module) sub-class. Use
     it as a regular PyTorch Module and refer to the PyTorch documentation for all matter related to general usage and
     behavior.
-
     Parameters:
         config ([`~GPTNeoXConfig`]): Model configuration class with all the parameters of the model.
             Initializing with a config file does not load the weights associated with the model, only the
@@ -477,24 +364,22 @@ GPT_NEOX_INPUTS_DOCSTRING = r"""
     Args:
         input_ids (`torch.LongTensor` of shape `({0})`):
             Indices of input sequence tokens in the vocabulary.
-
             Indices can be obtained using [`AutoTokenizer`]. See [`PreTrainedTokenizer.encode`] and
             [`PreTrainedTokenizer.__call__`] for details.
-
             [What are input IDs?](../glossary#input-ids)
         attention_mask (`torch.FloatTensor` of shape `({0})`, *optional*):
             Mask to avoid performing attention on padding token indices. Mask values selected in `[0, 1]`:
-
             - 1 for tokens that are **not masked**,
             - 0 for tokens that are **masked**.
-
             [What are attention masks?](../glossary#attention-mask)
+        position_ids (`torch.LongTensor` of shape `({0})`, *optional*):
+            Indices of positions of each input sequence tokens in the position embeddings. Selected in the range `[0,
+            config.n_positions - 1]`.
+            [What are position IDs?](../glossary#position-ids)
         head_mask (`torch.FloatTensor` of shape `(num_heads,)` or `(num_layers, num_heads)`, *optional*):
             Mask to nullify selected heads of the self-attention modules. Mask values selected in `[0, 1]`:
-
             - 1 indicates the head is **not masked**,
             - 0 indicates the head is **masked**.
-
         inputs_embeds (`torch.FloatTensor` of shape `({0}, hidden_size)`, *optional*):
             Optionally, instead of passing `input_ids` you can choose to directly pass an embedded representation. This
             is useful if you want more control over how to convert *input_ids* indices into associated vectors than the
@@ -534,17 +419,11 @@ class GPTNeoXModel(GPTNeoXPreTrainedModel):
     def set_input_embeddings(self, value):
         self.embed_in = value
 
-    @add_start_docstrings_to_model_forward(GPT_NEOX_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
-    @add_code_sample_docstrings(
-        checkpoint=_CHECKPOINT_FOR_DOC,
-        real_checkpoint=_REAL_CHECKPOINT_FOR_DOC,
-        output_type=BaseModelOutputWithPast,
-        config_class=_CONFIG_FOR_DOC,
-    )
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.FloatTensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
         head_mask: Optional[torch.FloatTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None,
@@ -582,7 +461,17 @@ class GPTNeoXModel(GPTNeoXPreTrainedModel):
         batch_size, seq_length = input_shape
 
         if past_key_values is None:
+            past_length = 0
             past_key_values = tuple([None] * self.config.num_hidden_layers)
+        else:
+            past_length = past_key_values[0][0].size(-2)
+
+        if position_ids is None:
+            device = input_ids.device if input_ids is not None else inputs_embeds.device
+            position_ids = torch.arange(past_length, seq_length + past_length, dtype=torch.long, device=device)
+            position_ids = position_ids.unsqueeze(0).view(-1, seq_length)
+        else:
+            position_ids = position_ids.view(-1, seq_length).long()
 
         # Attention mask.
         if attention_mask is not None:
@@ -600,7 +489,7 @@ class GPTNeoXModel(GPTNeoXPreTrainedModel):
             # positions we want to attend and the dtype's smallest value for masked positions.
             # Since we are adding it to the raw scores before the softmax, this is
             # effectively the same as removing these entirely.
-            attention_mask = attention_mask.half() # .to(dtype=self.dtype)  # fp16 compatibility
+            attention_mask = attention_mask.to(dtype=self.dtype)  # fp16 compatibility
             attention_mask = (1.0 - attention_mask) * torch.finfo(self.dtype).min
 
         # Prepare head mask if needed
@@ -642,12 +531,14 @@ class GPTNeoXModel(GPTNeoXPreTrainedModel):
                     create_custom_forward(layer),
                     hidden_states,
                     attention_mask,
+                    position_ids,
                     head_mask[i],
                 )
             else:
                 outputs = layer(
                     hidden_states,
                     attention_mask=attention_mask,
+                    position_ids=position_ids,
                     head_mask=head_mask[i],
                     layer_past=layer_past,
                     use_cache=use_cache,
@@ -702,6 +593,7 @@ class GPTNeoXForCausalLM(GPTNeoXPreTrainedModel):
         self,
         input_ids: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.FloatTensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         head_mask: Optional[torch.FloatTensor] = None,
         past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None,
@@ -717,10 +609,8 @@ class GPTNeoXForCausalLM(GPTNeoXPreTrainedModel):
             `(batch_size, num_heads, sequence_length, embed_size_per_head)`) and 2 additional tensors of shape
             `(batch_size, num_heads, encoder_sequence_length, embed_size_per_head)`. The two additional tensors are
             only required when the model is used as a decoder in a Sequence to Sequence model.
-
             Contains pre-computed hidden-states (key and values in the self-attention blocks that can be used (see
             `past_key_values` input) to speed up sequential decoding.
-
             If `past_key_values` are used, the user can optionally input only the last `decoder_input_ids` (those that
             don't have their past key value states given to this model) of shape `(batch_size, 1)` instead of all
             `decoder_input_ids` of shape `(batch_size, sequence_length)`.
@@ -731,23 +621,17 @@ class GPTNeoXForCausalLM(GPTNeoXPreTrainedModel):
         use_cache (`bool`, *optional*):
             If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding (see
             `past_key_values`).
-
         Returns:
-
         Example:
-
         ```python
         >>> from transformers import AutoTokenizer, GPTNeoXForCausalLM, GPTNeoXConfig
         >>> import torch
-
         >>> tokenizer = AutoTokenizer.from_pretrained("EleutherAI/gpt-neox-20b")
         >>> config = GPTNeoXConfig.from_pretrained("EleutherAI/gpt-neox-20b")
         >>> config.is_decoder = True
         >>> model = GPTNeoXForCausalLM.from_pretrained("EleutherAI/gpt-neox-20b", config=config)
-
         >>> inputs = tokenizer("Hello, my dog is cute", return_tensors="pt")
         >>> outputs = model(**inputs)
-
         >>> prediction_logits = outputs.logits
         ```"""
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
@@ -755,6 +639,7 @@ class GPTNeoXForCausalLM(GPTNeoXPreTrainedModel):
         outputs = self.gpt_neox(
             input_ids,
             attention_mask=attention_mask,
+            position_ids=position_ids,
             head_mask=head_mask,
             inputs_embeds=inputs_embeds,
             past_key_values=past_key_values,
@@ -769,6 +654,8 @@ class GPTNeoXForCausalLM(GPTNeoXPreTrainedModel):
 
         lm_loss = None
         if labels is not None:
+            # move labels to correct device to enable model parallelism
+            labels = labels.to(lm_logits.device)
             # we are doing next-token prediction; shift prediction scores and input ids by one
             shift_logits = lm_logits[:, :-1, :].contiguous()
             labels = labels[:, 1:].contiguous()
@@ -787,21 +674,30 @@ class GPTNeoXForCausalLM(GPTNeoXPreTrainedModel):
             attentions=outputs.attentions,
         )
 
-    def prepare_inputs_for_generation(self, input_ids, past_key_values=None, attention_mask=None, **model_kwargs):
+    def prepare_inputs_for_generation(self, input_ids, past=None, attention_mask=None, **kwargs):
         input_shape = input_ids.shape
+
+        # cut decoder_input_ids if past is used
+        if past and past[0] is not None:
+            input_ids = input_ids[:, -1:]
+
+        position_ids = kwargs.get("position_ids", None)
+        if attention_mask is not None and position_ids is None:
+            # create position_ids on the fly for batch generation
+            position_ids = attention_mask.long().cumsum(-1) - 1
+            position_ids.masked_fill_(attention_mask == 0, 1)
+            if past:
+                position_ids = position_ids[:, -1].unsqueeze(-1)
 
         # if model is used as a decoder in encoder-decoder model, the decoder attention mask is created on the fly
         if attention_mask is None:
-            attention_mask = input_ids.new_ones(input_shape).half()
-
-        # cut decoder_input_ids if past is used
-        if past_key_values and past_key_values[0] is not None:
-            input_ids = input_ids[:, -1:]
+            attention_mask = input_ids.new_ones(input_shape)
 
         return {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
-            "past_key_values": past_key_values,
+            "position_ids": position_ids,
+            "past_key_values": past,
         }
 
     def _reorder_cache(self, past_key_values, beam_idx):
