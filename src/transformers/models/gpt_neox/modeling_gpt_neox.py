@@ -567,8 +567,8 @@ class GPTNeoXModel(GPTNeoXPreTrainedModel):
             if not self.training and i >= 8:
                 if self.early_exit_entropy >= 0:
                     highway_entropy = entropy(self.final_layer_norm(hidden_states))
-                    if highway_entropy < 0.01:
-                        print("exited at layer ", i)
+                    if highway_entropy < self.early_exit_entropy:
+                        #print("exited at layer ", i)
                         break
 
         hidden_states = self.final_layer_norm(hidden_states)
