@@ -524,7 +524,7 @@ class GPTNeoXModel(GPTNeoXPreTrainedModel):
         presents = () if use_cache else None
         all_attentions = () if output_attentions else None
         all_hidden_states = () if output_hidden_states else None
-        embed_exit = nn.Linear(self.config.hidden_size, self.config.vocab_size, bias=False) if self.early_exit_entropy >= 0 else None
+        embed_exit = nn.Linear(self.config.hidden_size, self.config.vocab_size, bias=False).to("cuda:0") if self.early_exit_entropy >= 0 else None
 
         for i, (layer, layer_past) in enumerate(zip(self.layers, past_key_values)):
             if output_hidden_states:
