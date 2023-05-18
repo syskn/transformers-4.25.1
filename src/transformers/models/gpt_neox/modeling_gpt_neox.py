@@ -567,7 +567,7 @@ class GPTNeoXModel(GPTNeoXPreTrainedModel):
             if not self.training and i >= 12:
                 if self.early_exit_entropy >= 0:
                     highway_logit = self.final_layer_norm(hidden_states).squeeze(0)
-                    highway_entropy = entropy(highway_logit[0] / 100).item() # average over all tokens
+                    highway_entropy = entropy(highway_logit[0] * 1000).item() # average over all tokens
                     print("entropy at layer ", i, " = ", highway_entropy)
                     if highway_entropy < self.early_exit_entropy:
                         print("exited at layer ", i)
