@@ -416,7 +416,7 @@ class GPTNeoXModel(GPTNeoXPreTrainedModel):
         self.early_exit_entropy = -1
 
         self.gradient_checkpointing = False
-        
+
         # Initialize weights and apply final processing
         self.post_init()
 
@@ -566,6 +566,7 @@ class GPTNeoXModel(GPTNeoXPreTrainedModel):
             # Threshold of 0.01 is recommended
             if not self.training and i >= 8:
                 if self.early_exit_entropy >= 0:
+                    current_outputs = (hidden_states,)
                     highway_entropy = entropy(self.layers[i](current_outputs))
                     if highway_entropy < self.early_exit_entropy:
                         print("exited at layer ", i)
