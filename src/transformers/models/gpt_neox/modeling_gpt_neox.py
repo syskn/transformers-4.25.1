@@ -415,6 +415,8 @@ class GPTNeoXModel(GPTNeoXPreTrainedModel):
         self.final_layer_norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.early_exit_entropy = -1
 
+        self.gradient_checkpointing = False
+        
         # Initialize weights and apply final processing
         self.post_init()
 
