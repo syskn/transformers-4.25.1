@@ -413,9 +413,8 @@ class GPTNeoXModel(GPTNeoXPreTrainedModel):
         self.embed_in = nn.Embedding(config.vocab_size, config.hidden_size)
         self.layers = nn.ModuleList([GPTNeoXLayer(config) for _ in range(config.num_hidden_layers)])
         self.final_layer_norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        self.embed_out = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         self.early_exit_entropy = -1
-
-        self.gradient_checkpointing = False
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -566,7 +565,7 @@ class GPTNeoXModel(GPTNeoXPreTrainedModel):
             # Threshold of 0.01 is recommended
             if not self.training and i >= 8:
                 if self.early_exit_entropy >= 0:
-                    highway_entropy = entropy(super().embed_out(hidden_states))
+                    highway_entropy = entropy(embed_out(hidden_states))
                     if highway_entropy < self.early_exit_entropy:
                         print("exited at layer ", i)
                         break
