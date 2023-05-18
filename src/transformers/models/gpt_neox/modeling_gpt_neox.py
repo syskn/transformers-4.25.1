@@ -46,6 +46,12 @@ GPT_NEOX_PRETRAINED_MODEL_ARCHIVE_LIST = [
 ]
 
 
+def entropy(x):
+    # x: torch.Tensor, logits BEFORE softmax
+    x = torch.softmax(x, dim=-1)               # softmax normalized prob distribution
+    return -torch.sum(x*torch.log(x), dim=-1)  # entropy calculation on probs: -\sum(p \ln(p))
+
+
 class GPTNeoXPreTrainedModel(PreTrainedModel):
     """
     An abstract class to handle weights initialization and a simple interface for downloading and loading pretrained
@@ -407,11 +413,15 @@ class GPTNeoXModel(GPTNeoXPreTrainedModel):
         self.embed_in = nn.Embedding(config.vocab_size, config.hidden_size)
         self.layers = nn.ModuleList([GPTNeoXLayer(config) for _ in range(config.num_hidden_layers)])
         self.final_layer_norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        self.early_exit_entropy = -1
 
         self.gradient_checkpointing = False
 
         # Initialize weights and apply final processing
         self.post_init()
+
+    def set_early_exit_entropy(self, x):
+        self.early_exit_entropy = x
 
     def get_input_embeddings(self):
         return self.embed_in
@@ -549,6 +559,16 @@ class GPTNeoXModel(GPTNeoXPreTrainedModel):
                 presents = presents + (outputs[1],)
             if output_attentions:
                 all_attentions = all_attentions + (outputs[2 if use_cache else 1],)
+
+            # Entropy-based early exit. Only applies from layer 8
+            # Set threshold with GPTNeoXModel.set_early_exit_entropy()
+            # Threshold of 0.01 is recommended
+            if not self.training and i >= 8:
+                if self.early_exit_entropy >= 0:
+                    highway_entropy = entropy(hidden_states)
+                    if highway_entropy < self.early_exit_entropy:
+                        print("exited at layer ", i)
+                        break
 
         hidden_states = self.final_layer_norm(hidden_states)
         # Add last hidden state
