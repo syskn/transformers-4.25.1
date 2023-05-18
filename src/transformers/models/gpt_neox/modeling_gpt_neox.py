@@ -48,7 +48,7 @@ GPT_NEOX_PRETRAINED_MODEL_ARCHIVE_LIST = [
 
 def entropy(x):
     # x: torch.Tensor, logits BEFORE softmax
-    x = torch.softmax(x, dim=-1)               # softmax normalized prob distribution
+    x = torch.softmax(x - max(x), dim=-1)               # softmax normalized prob distribution
     return -torch.sum(x*torch.log(x), dim=-1)  # entropy calculation on probs: -\sum(p \ln(p))
 
 
@@ -567,7 +567,7 @@ class GPTNeoXModel(GPTNeoXPreTrainedModel):
             if not self.training and i >= 8:
                 if self.early_exit_entropy >= 0:
                     highway_logit = self.final_layer_norm(hidden_states).squeeze(0)
-                    highway_entropy = highway_logit.mean().item() # average over all tokens
+                    highway_entropy = entropy(highway_logit).mean().item() # average over all tokens
                     print("entropy at layer ", i, " = ", highway_entropy)
                     if highway_entropy < self.early_exit_entropy:
                         print("exited at layer ", i)
