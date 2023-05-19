@@ -524,6 +524,7 @@ class GPTNeoXModel(GPTNeoXPreTrainedModel):
         presents = () if use_cache else None
         all_attentions = () if output_attentions else None
         all_hidden_states = () if output_hidden_states else None
+        stop_decoding = False
 
         for i, (layer, layer_past) in enumerate(zip(self.layers, past_key_values)):
             if output_hidden_states:
@@ -546,15 +547,16 @@ class GPTNeoXModel(GPTNeoXPreTrainedModel):
                     head_mask[i],
                 )
             else:
-                outputs = layer(
-                    hidden_states,
-                    attention_mask=attention_mask,
-                    position_ids=position_ids,
-                    head_mask=head_mask[i],
-                    layer_past=layer_past,
-                    use_cache=use_cache,
-                    output_attentions=output_attentions,
-                )
+                if stop_decoding is False:
+                    outputs = layer(
+                        hidden_states,
+                        attention_mask=attention_mask,
+                        position_ids=position_ids,
+                        head_mask=head_mask[i],
+                        layer_past=layer_past,
+                        use_cache=use_cache,
+                        output_attentions=output_attentions,
+                    )
             hidden_states = outputs[0]
             if use_cache is True:
                 presents = presents + (outputs[1],)
@@ -572,7 +574,7 @@ class GPTNeoXModel(GPTNeoXPreTrainedModel):
                         #print("entropy at layer", i+1, " = ", highway_entropy)
                         if highway_entropy < self.early_exit_entropy:
                             print("exited at layer", i+1, " = ", highway_entropy)
-                            break
+                            stop_decoding = True
                     except Exception as e:
                         pass
 
