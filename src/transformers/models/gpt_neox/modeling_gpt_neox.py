@@ -565,7 +565,7 @@ class GPTNeoXModel(GPTNeoXPreTrainedModel):
             # Set threshold with model.gpt_neox.set_early_exit_entropy()
             # Threshold of 42 is recommended
             if not self.training and self.early_exit_entropy >= 0:
-                if i >= 16 and i % 2 == 0 and i < self.config.num_hidden_layers:
+                if i >= 20 and i < self.config.num_hidden_layers:
                     try:
                         highway_logit = self.final_layer_norm(hidden_states).squeeze(0)
                         highway_entropy = (highway_logit[0].max() - highway_logit[0].mean()).item()
