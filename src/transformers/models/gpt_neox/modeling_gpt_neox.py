@@ -387,7 +387,7 @@ class RotaryEmbedding(torch.nn.Module):
                 self._cos_k_cached = (torch.cos(freqs) / scale).to(x.dtype)
                 self._sin_k_cached = (torch.sin(freqs) / scale).to(x.dtype)
 
-    def forward(self, qkv: torch.Tensor, seqlen_offset: int = 0) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, qkv: torch.Tensor, seqlen_offset: int = 0, seq_len=None) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         qkv: (batch, seqlen, 3, nheads, headdim)
         seqlen_offset: can be used in generation where the qkv being passed in is only the last
