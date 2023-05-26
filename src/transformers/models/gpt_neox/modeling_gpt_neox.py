@@ -22,7 +22,7 @@ from torch import nn
 from torch.nn import CrossEntropyLoss
 import torch.nn.functional as F
 
-FUSE_LN = True
+FUSE_LN = False
 FUSE_MLP = True
 FUSE_ROTARY = False
 FLASH_ATTN = False
@@ -452,7 +452,7 @@ class GPTNeoXLayer(nn.Module):
                 hidden_states = mlp_output + attn_output
             else:
                 hidden_states = dropout_add_layer_norm(
-                    hidden_states, attn_output, self.post_attention_layernorm.weight, self.post_attention_layernorm.bias,
+                    hidden_states, residual, attn_output, self.post_attention_layernorm.weight, self.post_attention_layernorm.bias,
                     0.0, self.post_attention_layernorm.eps,
                     rowscale=None, prenorm=False, residual_in_fp32=False
                 )
