@@ -24,7 +24,7 @@ import torch.nn.functional as F
 
 FUSE_LN = False
 FUSE_MLP = True
-FUSE_ROTARY = False
+FUSE_ROTARY = True
 FLASH_ATTN = True
 FLASH_CROSS_ATTN = True
 
@@ -323,33 +323,90 @@ def attention_mask_func(attention_scores, ltor_mask):
 
 
 class RotaryEmbedding(torch.nn.Module):
-    def __init__(self, dim, max_position_embeddings, base=10000, device=None):
+    """
+    The rotary position embeddings from RoFormer_ (Su et. al).
+    A crucial insight from the method is that the query and keys are
+    transformed by rotation matrices which depend on the relative positions.
+
+    Other implementations are available in the Rotary Transformer repo_ and in
+    GPT-NeoX_, GPT-NeoX was an inspiration
+
+    .. _RoFormer: https://arxiv.org/abs/2104.09864
+    .. _repo: https://github.com/ZhuiyiTechnology/roformer
+    .. _GPT-NeoX: https://github.com/EleutherAI/gpt-neox
+
+    If scale_base is not None, this implements XPos (Sun et al., https://arxiv.org/abs/2212.10554).
+    A recommended value for scale_base is 512: https://github.com/HazyResearch/flash-attention/issues/96
+    Reference: https://github.com/sunyt32/torchscale/blob/main/torchscale/component/xpos_relative_position.py
+    """
+
+    def __init__(self, dim: int, base=10000, interleaved=False, scale_base=None, device=None):
+        """
+            interleaved: if True, rotate pairs of even and odd dimensions (GPT-J style) instead
+                of 1st half and 2nd half (GPT-NeoX style).
+        """
         super().__init__()
-        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float().to(device) / dim))
+        # Generate and save the inverse frequency buffer (non trainable)
+        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2, device=device,
+                                                dtype=torch.float32) / dim))
         self.register_buffer("inv_freq", inv_freq)
+        self.interleaved = interleaved
+        self.scale_base = scale_base
+        scale = ((torch.arange(0, dim, 2, device=device, dtype=torch.float32) + 0.4 * dim)
+                 / (1.4 * dim) if scale_base is not None else None)
+        self.register_buffer("scale", scale)
 
-        # Build here to make `torch.jit.trace` work.
-        self.max_seq_len_cached = max_position_embeddings
-        t = torch.arange(self.max_seq_len_cached, device=self.inv_freq.device, dtype=self.inv_freq.dtype)
-        freqs = torch.einsum("i,j->ij", t, self.inv_freq)
-        # Different from paper, but it uses a different permutation in order to obtain the same calculation
-        emb = torch.cat((freqs, freqs), dim=-1)
-        self.cos_cached = emb.cos()[None, None, :, :].half()
-        self.sin_cached = emb.sin()[None, None, :, :].half()
+        self._seq_len_cached = 0
+        self._cos_cached = None
+        self._sin_cached = None
+        self._cos_k_cached = None
+        self._sin_k_cached = None
 
-    def forward(self, x, seq_len=None):
-        # x: [bs, num_attention_heads, seq_len, head_size]
-        # This `if` block is unlikely to be run after we build sin/cos in `__init__`. Keep the logic here just in case.
-        if seq_len > self.max_seq_len_cached:
-            self.max_seq_len_cached = seq_len
-            t = torch.arange(self.max_seq_len_cached, device=x.device, dtype=self.inv_freq.dtype)
-            freqs = torch.einsum("i,j->ij", t, self.inv_freq)
-            # Different from paper, but it uses a different permutation in order to obtain the same calculation
-            emb = torch.cat((freqs, freqs), dim=-1).to(x.device)
-            self.cos_cached = emb.cos()[None, None, :, :].half()
-            self.sin_cached = emb.sin()[None, None, :, :].half()
-        # return self.cos_cached[:seq_len, ...].to(x.device), self.sin_cached[:seq_len, ...].to(x.device)
-        return self.cos_cached[:seq_len, ...], self.sin_cached[:seq_len, ...]
+    def _update_cos_sin_cache(self, x, seqlen_offset=0):
+        """x: (batch, seqlen, nheads, headdim) or (batch, seqlen, 3, nheads, headdim)
+        """
+        seqlen = x.shape[1] + seqlen_offset
+        # Reset the tables if the sequence length has changed,
+        # or if we're on a new device (possibly due to tracing for instance)
+        if (seqlen > self._seq_len_cached or self._cos_cached.device != x.device
+            or self._cos_cached.dtype != x.dtype):
+            self._seq_len_cached = seqlen
+            t = torch.arange(seqlen, device=x.device, dtype=self.inv_freq.dtype)
+            # Don't do einsum, it converts fp32 to fp16
+            # freqs = torch.einsum("i,j->ij", t, self.inv_freq)
+            freqs = torch.outer(t, self.inv_freq.to(device=t.device))
+            if self.scale is None:
+                self._cos_cached = torch.cos(freqs).to(x.dtype)
+                self._sin_cached = torch.sin(freqs).to(x.dtype)
+            else:
+                power = ((torch.arange(seqlen, dtype=self.scale.dtype, device=self.scale.device)
+                          - seqlen // 2) / self.scale_base)
+                scale = self.scale.to(device=power.device) ** rearrange(power, 's -> s 1')
+                # We want the multiplication by scale to happen in fp32
+                self._cos_cached = (torch.cos(freqs) * scale).to(x.dtype)
+                self._sin_cached = (torch.sin(freqs) * scale).to(x.dtype)
+                self._cos_k_cached = (torch.cos(freqs) / scale).to(x.dtype)
+                self._sin_k_cached = (torch.sin(freqs) / scale).to(x.dtype)
+
+    def forward(self, qkv: torch.Tensor, seqlen_offset: int = 0) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        qkv: (batch, seqlen, 3, nheads, headdim)
+        seqlen_offset: can be used in generation where the qkv being passed in is only the last
+        token in the batch.
+        """
+        self._update_cos_sin_cache(qkv, seqlen_offset)
+        if self.scale is None:
+            return apply_rotary_emb_qkv_(
+                qkv, self._cos_cached[seqlen_offset:], self._sin_cached[seqlen_offset:],
+                None, None, self.interleaved
+            )
+        else:
+            return apply_rotary_emb_qkv_(
+                qkv, self._cos_cached[seqlen_offset:], self._sin_cached[seqlen_offset:],
+                self._cos_k_cached[seqlen_offset:], self._sin_k_cached[seqlen_offset:],
+                self.interleaved
+            )
+
 
 
 def rotate_half(x):
