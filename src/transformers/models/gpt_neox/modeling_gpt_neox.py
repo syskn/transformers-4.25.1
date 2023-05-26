@@ -247,7 +247,6 @@ class GPTNeoXAttention(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         head_mask: Optional[torch.Tensor] = None,
     ):
-        raise_on_head_mask(head_mask)
         batch_size = query.shape[0]
 
         mask_value = torch.finfo(value.dtype).min
@@ -261,7 +260,7 @@ class GPTNeoXAttention(nn.Module):
         if batch_size == 1 and attention_mask is not None and attention_mask[0, 0, 0, -1] < -1:
             raise ValueError("BetterTransformer does not support padding='max_length' with a batch size of 1.")
 
-        dropout_p = self.dropout_prob_attn if self.training else 0.0
+        dropout_p = 0.0
         if batch_size == 1 or self.training:
             if query.shape[2] > 1:
                 sdpa_result = torch.nn.functional.scaled_dot_product_attention(
