@@ -32,7 +32,7 @@ if FLASH_ATTN:
 if FLASH_CROSS_ATTN:
     from flash_attn.modules.mha import FlashCrossAttention
 if FUSE_MLP:
-    from flash_attn.ops.fused_dense import fused_dense_gelu_dense_func
+    from flash_attn.ops.fused_dense import fused_mlp_func
 if FUSE_LN:
     from flash_attn.ops.layer_norm import dropout_add_layer_norm
 from einops import rearrange
@@ -395,7 +395,7 @@ class GPTNeoXMLP(nn.Module):
             hidden_states = self.dense_4h_to_h(hidden_states)
             return hidden_states
         else:
-            return fused_dense_gelu_dense_func(
+            return fused_mlp_func(
                 hidden_states,
                 self.dense_h_to_4h.weight, self.dense_4h_to_h.weight,
                 self.dense_h_to_4h.bias, self.dense_4h_to_h.bias,
