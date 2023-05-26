@@ -339,7 +339,7 @@ class RotaryEmbedding(torch.nn.Module):
     A recommended value for scale_base is 512: https://github.com/HazyResearch/flash-attention/issues/96
     Reference: https://github.com/sunyt32/torchscale/blob/main/torchscale/component/xpos_relative_position.py
     """
-    def __init__(self, dim: max_position_embeddings, int, base=10000, interleaved=False, scale_base=None, device=None):
+    def __init__(self, dim: int, max_position_embeddings, base=10000, interleaved=False, scale_base=None, device=None):
         """
             interleaved: if True, rotate pairs of even and odd dimensions (GPT-J style) instead
                 of 1st half and 2nd half (GPT-NeoX style).
