@@ -452,11 +452,11 @@ class GPTNeoXLayer(nn.Module):
                 hidden_states = mlp_output + attn_output
             else:
                 hidden_states = dropout_add_layer_norm(
-                    hidden_states, residual, attn_output, self.post_attention_layernorm.weight, self.post_attention_layernorm.bias,
+                    hidden_states, residual, self.post_attention_layernorm.weight, self.post_attention_layernorm.bias,
                     0.0, self.post_attention_layernorm.eps,
                     rowscale=None, prenorm=False, residual_in_fp32=False
                 )
-                hidden_states = self.mlp(hidden_states)
+                hidden_states = self.mlp(hidden_states) + residual
 
         if use_cache:
             outputs = (hidden_states,) + outputs  # hidden_states, present, (attn_weights)
