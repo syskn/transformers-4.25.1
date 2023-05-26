@@ -47,7 +47,6 @@ GPT_NEOX_PRETRAINED_MODEL_ARCHIVE_LIST = [
 
 
 
-import triton
 import triton.language as tl
 
 
