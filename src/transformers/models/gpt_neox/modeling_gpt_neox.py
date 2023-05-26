@@ -22,7 +22,7 @@ from torch import nn
 from torch.nn import CrossEntropyLoss
 import torch.nn.functional as F
 
-FUSE_LN = False
+FUSE_LN = True
 FUSE_MLP = True
 FUSE_ROTARY = False
 FLASH_ATTN = False
