@@ -22,7 +22,7 @@ from torch import nn
 from torch.nn import CrossEntropyLoss
 import torch.nn.functional as F
 
-FUSE_LN = True
+FUSE_LN = False
 FUSE_MLP = True
 FUSE_ROTARY = False
 FLASH_ATTN = False
@@ -376,7 +376,7 @@ def rotate_half(x):
 #     x2 = x[..., x.shape[-1] // 2 :]
 #     return torch.cat((-x2, x1), dim=-1)
 
-
+@torch.compile
 def apply_rotary_pos_emb(q, k, cos, sin, offset: int = 0):
     cos = cos[..., offset : q.shape[-2] + offset, :]
     sin = sin[..., offset : q.shape[-2] + offset, :]
@@ -451,12 +451,12 @@ class GPTNeoXLayer(nn.Module):
                 mlp_output = self.mlp(self.post_attention_layernorm(attn_output))
                 hidden_states = mlp_output + attn_output
             else:
-                hidden_states = dropout_add_layer_norm(
+                hidden_states, residual = dropout_add_layer_norm(
                     hidden_states, attn_output, self.post_attention_layernorm.weight, self.post_attention_layernorm.bias,
                     0.0, self.post_attention_layernorm.eps,
                     rowscale=None, prenorm=False, residual_in_fp32=False
                 )
-                hidden_states = self.mlp(hidden_states) + attn_output
+                hidden_states = self.mlp(hidden_states) + residual
 
         if use_cache:
             outputs = (hidden_states,) + outputs  # hidden_states, present, (attn_weights)
