@@ -239,7 +239,7 @@ class GPTNeoXAttention(nn.Module):
         # -> [bs, seq_len, hidden_size]
         return tensor
 
-    def gpt2_wrapped_scaled_dot_product(
+    def _attn(
         self,
         query: torch.Tensor,
         key: torch.Tensor,
