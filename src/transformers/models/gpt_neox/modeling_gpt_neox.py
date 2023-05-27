@@ -25,13 +25,7 @@ import torch.nn.functional as F
 FUSE_LN = False
 FUSE_MLP = True
 FUSE_ROTARY = False
-FLASH_ATTN = False
-FLASH_CROSS_ATTN = False
 
-if FLASH_ATTN:
-    from flash_attn.flash_attention import FlashAttention
-if FLASH_CROSS_ATTN:
-    from flash_attn.modules.mha import FlashCrossAttention
 if FUSE_MLP:
     from flash_attn.ops.fused_dense import fused_mlp_func
 if FUSE_LN:
@@ -116,10 +110,6 @@ class GPTNeoXAttention(nn.Module):
         self.norm_factor = torch.sqrt(torch.tensor(self.head_size, dtype=torch.float32)).to(torch.get_default_dtype())
         self.query_key_value = nn.Linear(config.hidden_size, 3 * config.hidden_size)
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
-        if FLASH_ATTN:
-            self.flash_attn = FlashAttention()
-        if FLASH_CROSS_ATTN:
-            self.flash_cross_attn = FlashCrossAttention()
 
     def forward(
         self,
