@@ -694,7 +694,7 @@ class GPTNeoXForCausalLM(GPTNeoXPreTrainedModel):
         self.embed_out = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
         self.early_exit_threshold = 0.8
-        self.early_exit_layer = 30
+        self.early_exit_layer = 9999
 
         # Initialize weights and apply final processing
         self.post_init()
