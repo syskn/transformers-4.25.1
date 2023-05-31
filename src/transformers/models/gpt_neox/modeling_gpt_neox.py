@@ -783,10 +783,13 @@ class GPTNeoXForCausalLM(GPTNeoXPreTrainedModel):
             hidden_states = outputs[0]
             lm_logits = self.embed_out(hidden_states)
 
+            if layer_skip == 9999:
+                break
+                
             next_tokens_scores = lm_logits[:, -1, :]
             score = torch.softmax(next_tokens_scores, dim=-1)
             score_max = score.max()
-            if score_max < self.early_exit_threshold and score_max < 0.99 and layer_skip != 9999:
+            if score_max < self.early_exit_threshold and score_max < 0.99:
                 print(score_max)
                 layer_skip = 9999
             else:
