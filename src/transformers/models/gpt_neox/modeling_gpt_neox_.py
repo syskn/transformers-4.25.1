@@ -566,7 +566,7 @@ class GPTNeoXModel(GPTNeoXPreTrainedModel):
             # Entropy-based early exit. Only applies from layer 8
             # Set threshold with model.gpt_neox.set_early_exit_entropy()
             # Threshold of 42 and starting layer of (num_layers * 0.75) is recommended
-            if not self.training and self.early_exit_entropy >= 0 and not stop_decoding:
+            if not self.training and self.early_exit_entropy != -1 and not stop_decoding:
                 if i >= 33 and i + 1 < self.config.num_hidden_layers:
                     try:
                         highway_logit = self.final_layer_norm(hidden_states).squeeze(0)
