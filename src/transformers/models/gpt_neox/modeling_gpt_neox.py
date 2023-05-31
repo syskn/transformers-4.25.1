@@ -651,7 +651,6 @@ class GPTNeoXModel(GPTNeoXPreTrainedModel):
                     outputs = layer(
                         hidden_states,
                         attention_mask=attention_mask,
-                        position_ids=position_ids,
                         head_mask=head_mask[i],
                         layer_past=layer_past,
                         use_cache=use_cache,
