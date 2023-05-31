@@ -660,7 +660,7 @@ class GPTNeoXModel(GPTNeoXPreTrainedModel):
                 all_attentions = all_attentions + (outputs[2 if use_cache else 1],)
 
             # Entropy-based early exit
-            if not self.training and self.early_exit_entropy != -1 and not stop_decoding:
+            if not self.training and layer_skip != 9999 and not stop_decoding:
                 if i >= layer_skip:
                     print("exited at layer", i+1)
                     stop_decoding = True
