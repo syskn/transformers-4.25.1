@@ -662,9 +662,7 @@ class GPTNeoXModel(GPTNeoXPreTrainedModel):
             if output_attentions:
                 all_attentions = all_attentions + (outputs[2 if use_cache else 1],)
 
-            # Entropy-based early exit. Only applies from layer 8
-            # Set threshold with model.gpt_neox.set_early_exit_entropy()
-            # Threshold of 42 and starting layer of (num_layers * 0.75) is recommended
+            # Entropy-based early exit
             if not self.training and self.early_exit_entropy != -1 and not stop_decoding:
                 if i >= 33 and i + 1 < self.config.num_hidden_layers:
                     try:
@@ -784,6 +782,10 @@ class GPTNeoXForCausalLM(GPTNeoXPreTrainedModel):
 
         hidden_states = outputs[0]
         lm_logits = self.embed_out(hidden_states)
+
+        next_tokens_scores = lm_logits[:, -1, :]
+        score = torch.softmax(next_tokens_scores, dim=-1)
+        print(score.max())
 
         lm_loss = None
         if labels is not None:
