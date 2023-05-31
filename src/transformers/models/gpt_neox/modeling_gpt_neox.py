@@ -788,7 +788,8 @@ class GPTNeoXForCausalLM(GPTNeoXPreTrainedModel):
             if score.max() < self.early_exit_threshold and layer_skip != 9999:
                 print(score.max())
                 layer_skip = 9999
-            break
+            else:
+                break
 
         lm_loss = None
         if labels is not None:
