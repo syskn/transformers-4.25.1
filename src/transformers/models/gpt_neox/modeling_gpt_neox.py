@@ -789,7 +789,7 @@ class GPTNeoXForCausalLM(GPTNeoXPreTrainedModel):
             next_tokens_scores = lm_logits[:, -1, :]
             score = torch.softmax(next_tokens_scores, dim=-1)
             score_max = score.max()
-            if score_max < self.early_exit_threshold or score_max > 0.99:
+            if score_max < self.early_exit_threshold:
                 print(score_max)
                 layer_skip = 9999
             else:
