@@ -525,15 +525,11 @@ class GPTNeoXModel(GPTNeoXPreTrainedModel):
         self.embed_in = nn.Embedding(config.vocab_size, config.hidden_size)
         self.layers = nn.ModuleList([GPTNeoXLayer(config) for _ in range(config.num_hidden_layers)])
         self.final_layer_norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
-        self.early_exit_entropy = -1
 
         self.gradient_checkpointing = False
 
         # Initialize weights and apply final processing
         self.post_init()
-
-    def set_early_exit_entropy(self, x):
-        self.early_exit_entropy = x
 
     def get_input_embeddings(self):
         return self.embed_in
@@ -697,6 +693,9 @@ class GPTNeoXForCausalLM(GPTNeoXPreTrainedModel):
         self.gpt_neox = GPTNeoXModel(config)
         self.embed_out = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
+        self.early_exit_threshold = 0.8
+        self.early_exit_layer = 30
+
         # Initialize weights and apply final processing
         self.post_init()
 
@@ -705,6 +704,10 @@ class GPTNeoXForCausalLM(GPTNeoXPreTrainedModel):
 
     def set_output_embeddings(self, new_embeddings):
         self.embed_out = new_embeddings
+
+    def set_early_exit_settings(self, threshold, layer):
+        self.early_exit_threshold = threshold
+        self.early_exit_layer = layer
 
     @add_start_docstrings_to_model_forward(GPT_NEOX_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
     @replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
@@ -761,7 +764,7 @@ class GPTNeoXForCausalLM(GPTNeoXPreTrainedModel):
         >>> prediction_logits = outputs.logits
         ```"""
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-        layer_skip = 30
+        layer_skip = self.early_exit_layer
 
         while True:
             outputs = self.gpt_neox(
@@ -782,7 +785,7 @@ class GPTNeoXForCausalLM(GPTNeoXPreTrainedModel):
 
             next_tokens_scores = lm_logits[:, -1, :]
             score = torch.softmax(next_tokens_scores, dim=-1)
-            if score.max() < 0.6 and layer_skip != 9999:
+            if score.max() < self.early_exit_threshold and layer_skip != 9999:
                 print(score.max())
                 layer_skip = 9999
             break
