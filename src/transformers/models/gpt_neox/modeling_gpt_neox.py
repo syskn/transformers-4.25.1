@@ -662,7 +662,7 @@ class GPTNeoXModel(GPTNeoXPreTrainedModel):
             # Entropy-based early exit
             if not self.training and layer_skip != 9999 and not stop_decoding:
                 if i >= layer_skip:
-                    print("exited at layer", i+1)
+                    #print("exited at layer", i+1)
                     stop_decoding = True
 
         hidden_states = self.final_layer_norm(hidden_states)
@@ -785,7 +785,7 @@ class GPTNeoXForCausalLM(GPTNeoXPreTrainedModel):
 
             if layer_skip == 9999:
                 break
-                
+
             next_tokens_scores = lm_logits[:, -1, :]
             score = torch.softmax(next_tokens_scores, dim=-1)
             score_max = score.max()
