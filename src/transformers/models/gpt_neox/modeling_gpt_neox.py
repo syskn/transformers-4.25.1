@@ -23,10 +23,10 @@ from torch.nn import CrossEntropyLoss
 import torch.nn.functional as F
 
 FUSE_LN = False
-FUSE_MLP = True
+FUSE_MLP = False
 FUSE_ROTARY = False
-FLASH_ATTN = True
-FLASH_CROSS_ATTN = True
+FLASH_ATTN = False
+FLASH_CROSS_ATTN = False
 
 if FLASH_ATTN:
     from flash_attn.flash_attention import FlashAttention
