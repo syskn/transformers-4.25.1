@@ -552,6 +552,7 @@ class GPTNeoXModel(GPTNeoXPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        layer_skip: Optional[int] = 9999,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         r"""
         past_key_values (`tuple(tuple(torch.FloatTensor))` of length `config.n_layers` with each tuple having 4 tensors of shape `(batch_size, num_heads, sequence_length - 1, embed_size_per_head)`):
@@ -664,18 +665,9 @@ class GPTNeoXModel(GPTNeoXPreTrainedModel):
 
             # Entropy-based early exit
             if not self.training and self.early_exit_entropy != -1 and not stop_decoding:
-                if i >= 33 and i + 1 < self.config.num_hidden_layers:
-                    try:
-                        highway_logit = self.final_layer_norm(hidden_states).squeeze(0)
-                        next_tokens_scores = highway_logit[-1, :]
-                        score = torch.softmax(next_tokens_scores, dim=-1)
-                        highway_max = score.max()
-                        print("max score at layer", i+1, " = ", highway_max)
-                        if highway_entropy < self.early_exit_entropy:
-                            print("exited at layer", i+1, " = ", highway_max)
-                            stop_decoding = True
-                    except Exception as e:
-                        pass
+                if i >= layer_skip:
+                    print("exited at layer", i+1, " = ", highway_max)
+                    stop_decoding = True
 
         hidden_states = self.final_layer_norm(hidden_states)
         # Add last hidden state
@@ -769,25 +761,31 @@ class GPTNeoXForCausalLM(GPTNeoXPreTrainedModel):
         >>> prediction_logits = outputs.logits
         ```"""
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        layer_skip = 30
 
-        outputs = self.gpt_neox(
-            input_ids,
-            attention_mask=attention_mask,
-            head_mask=head_mask,
-            inputs_embeds=inputs_embeds,
-            past_key_values=past_key_values,
-            use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-        )
+        while True:
+            outputs = self.gpt_neox(
+                input_ids,
+                attention_mask=attention_mask,
+                head_mask=head_mask,
+                inputs_embeds=inputs_embeds,
+                past_key_values=past_key_values,
+                use_cache=use_cache,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+                layer_skip=layer_skip
+            )
 
-        hidden_states = outputs[0]
-        lm_logits = self.embed_out(hidden_states)
+            hidden_states = outputs[0]
+            lm_logits = self.embed_out(hidden_states)
 
-        #next_tokens_scores = lm_logits[:, -1, :]
-        #score = torch.softmax(next_tokens_scores, dim=-1)
-        #print(score.max())
+            next_tokens_scores = lm_logits[:, -1, :]
+            score = torch.softmax(next_tokens_scores, dim=-1)
+            if score.max() < 0.6 and layer_skip != 9999:
+                print(score.max())
+                layer_skip = 9999
+            break
 
         lm_loss = None
         if labels is not None:
