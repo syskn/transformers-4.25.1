@@ -525,11 +525,15 @@ class GPTNeoXModel(GPTNeoXPreTrainedModel):
         self.embed_in = nn.Embedding(config.vocab_size, config.hidden_size)
         self.layers = nn.ModuleList([GPTNeoXLayer(config) for _ in range(config.num_hidden_layers)])
         self.final_layer_norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        self.early_exit_entropy = -1
 
         self.gradient_checkpointing = False
 
         # Initialize weights and apply final processing
         self.post_init()
+
+    def set_early_exit_entropy(self, x):
+        self.early_exit_entropy = x
 
     def get_input_embeddings(self):
         return self.embed_in
@@ -654,6 +658,21 @@ class GPTNeoXModel(GPTNeoXPreTrainedModel):
                 presents = presents + (outputs[1],)
             if output_attentions:
                 all_attentions = all_attentions + (outputs[2 if use_cache else 1],)
+
+            # Entropy-based early exit. Only applies from layer 8
+            # Set threshold with model.gpt_neox.set_early_exit_entropy()
+            # Threshold of 42 and starting layer of (num_layers * 0.75) is recommended
+            if not self.training and self.early_exit_entropy >= 0 and not stop_decoding:
+                if i >= 33 and i + 1 < self.config.num_hidden_layers:
+                    try:
+                        highway_logit = self.final_layer_norm(hidden_states).squeeze(0)
+                        highway_entropy = (highway_logit[0].min()).item()
+                        print("entropy at layer", i+1, " = ", highway_entropy)
+                        if highway_entropy < self.early_exit_entropy:
+                            print("exited at layer", i+1, " = ", highway_entropy)
+                            stop_decoding = True
+                    except Exception as e:
+                        pass
 
         hidden_states = self.final_layer_norm(hidden_states)
         # Add last hidden state
