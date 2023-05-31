@@ -666,7 +666,7 @@ class GPTNeoXModel(GPTNeoXPreTrainedModel):
             # Entropy-based early exit
             if not self.training and self.early_exit_entropy != -1 and not stop_decoding:
                 if i >= layer_skip:
-                    print("exited at layer", i+1, " = ", highway_max)
+                    print("exited at layer", i+1)
                     stop_decoding = True
 
         hidden_states = self.final_layer_norm(hidden_states)
