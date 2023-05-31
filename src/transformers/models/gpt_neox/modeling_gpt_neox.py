@@ -667,10 +667,12 @@ class GPTNeoXModel(GPTNeoXPreTrainedModel):
                 if i >= 33 and i + 1 < self.config.num_hidden_layers:
                     try:
                         highway_logit = self.final_layer_norm(hidden_states).squeeze(0)
-                        highway_entropy = (highway_logit[0].min()).item()
-                        print("entropy at layer", i+1, " = ", highway_entropy)
+                        next_tokens_scores = highway_logit[-1, :]
+                        score = torch.softmax(next_tokens_scores, dim=-1)
+                        highway_max = score.max()
+                        print("max score at layer", i+1, " = ", highway_max)
                         if highway_entropy < self.early_exit_entropy:
-                            print("exited at layer", i+1, " = ", highway_entropy)
+                            print("exited at layer", i+1, " = ", highway_max)
                             stop_decoding = True
                     except Exception as e:
                         pass
@@ -783,9 +785,9 @@ class GPTNeoXForCausalLM(GPTNeoXPreTrainedModel):
         hidden_states = outputs[0]
         lm_logits = self.embed_out(hidden_states)
 
-        next_tokens_scores = lm_logits[:, -1, :]
-        score = torch.softmax(next_tokens_scores, dim=-1)
-        print(score.max())
+        #next_tokens_scores = lm_logits[:, -1, :]
+        #score = torch.softmax(next_tokens_scores, dim=-1)
+        #print(score.max())
 
         lm_loss = None
         if labels is not None:
