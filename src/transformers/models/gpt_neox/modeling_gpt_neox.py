@@ -65,6 +65,100 @@ GPT_NEOX_PRETRAINED_MODEL_ARCHIVE_LIST = [
 ]
 
 
+
+import triton
+import triton.language as tl
+
+
+@triton.jit
+def rotate_half_kernel(
+        qk_seq_ptr,
+        position_ids_ptr,
+        qk_seq_stride,
+        position_ids_batch_stride,
+        seq_len,
+        HEAD_DIM: tl.constexpr,
+        BLOCK_HEIGHT: tl.constexpr,
+        BLOCK_WIDTH: tl.constexpr,
+        INV_BASE: tl.constexpr
+):
+    # qk_seq_ptr: (bsz, seq_len, 2, num_heads, head_dim) -- OK to be discontinuous in 2nd dimension.
+    # position ids: (bsz, seq_len) -- must be contiguous in the last dimension.
+
+    HALF_HEAD: tl.constexpr = HEAD_DIM // 2
+    STEPS_PER_ROW: tl.constexpr = HALF_HEAD // BLOCK_WIDTH
+
+    batch_seq = tl.program_id(axis=0)
+    row_blk_x_col_blk = tl.program_id(axis=1)
+
+    row_blk = row_blk_x_col_blk // STEPS_PER_ROW
+    row = row_blk * BLOCK_HEIGHT
+    if BLOCK_WIDTH < HALF_HEAD:
+        col_blk = row_blk_x_col_blk % STEPS_PER_ROW
+        col = col_blk * BLOCK_WIDTH
+    else:
+        col: tl.constexpr = 0
+
+    # A block will never cross a sequence boundary, which simplifies things a lot.
+    batch = batch_seq // seq_len
+    seq = batch_seq % seq_len
+    position_id = tl.load(position_ids_ptr + batch * position_ids_batch_stride + seq)
+    # As sometimes happens, just calculating this on the fly is faster than loading it from memory.
+    # Use `tl.libdevice.exp` rather than `tl.exp` -- the latter is less accurate.
+    freq = tl.libdevice.exp((col + tl.arange(0, BLOCK_WIDTH)).to(tl.float32) * INV_BASE) * position_id
+    cos = tl.cos(freq).to(tl.float32)
+    sin = tl.sin(freq).to(tl.float32)
+
+    col_offsets: tl.constexpr = tl.arange(0, BLOCK_WIDTH)
+    embed_offsets = (row * HEAD_DIM + col) + col_offsets
+    x_ptrs = (qk_seq_ptr + batch_seq * qk_seq_stride) + embed_offsets
+
+    for k in range(0, BLOCK_HEIGHT):
+        x = tl.load(x_ptrs).to(tl.float32)
+        y = tl.load(x_ptrs + HALF_HEAD).to(tl.float32)
+        out_x = x * cos - y * sin
+        tl.store(x_ptrs, out_x)
+        out_y = x * sin + y * cos
+        tl.store(x_ptrs + HALF_HEAD, out_y)
+        x_ptrs += HEAD_DIM
+
+
+def triton_rotate_half_(qk, position_ids, config=None):
+    batch_size, seq_len, qandk, num_heads, head_dim = qk.shape
+
+    # This default is the fastest for most job sizes, at least on my RTX 4090, and when it's not it's within spitting distance of the best option. There are some odd cases where having a block height of 2 or 4 helps but the difference is within 5%. It makes sense that this configuration is fast from a memory bandwidth and caching perspective.
+    config = config or {'BLOCK_HEIGHT': 1, 'BLOCK_WIDTH': min(128, head_dim // 2), 'num_warps': 1}
+    config['BLOCK_HEIGHT'] = min(config['BLOCK_HEIGHT'], 2 * num_heads)
+
+    assert qk.stride(3) == head_dim
+    assert qk.stride(4) == 1
+    assert position_ids.shape == (batch_size, seq_len)
+    assert position_ids.stride(1) == 1, 'position_ids must be contiguous in the last dimension'
+    assert (2 * num_heads) % config['BLOCK_HEIGHT'] == 0, f'number of rows not evenly divisible by {config["BLOCK_HEIGHT"]}'
+    assert (head_dim // 2) % config['BLOCK_WIDTH'] == 0, f'number of columns ({head_dim // 2}) not evenly divisible by {config["BLOCK_WIDTH"]}'
+
+    qk_by_seq = qk.view(batch_size * seq_len, 2 * num_heads * head_dim)
+    grid = (qk_by_seq.shape[0], (2 * num_heads // config['BLOCK_HEIGHT']) * (head_dim // 2 // config['BLOCK_WIDTH']))
+
+    # Must be the same as the theta of the frequencies used to train the model.
+    BASE = 10000.0
+
+    rotate_half_kernel[grid](
+        qk_by_seq,
+        position_ids,
+        qk_by_seq.stride(0),
+        position_ids.stride(0),
+        seq_len,
+        HEAD_DIM=head_dim,
+        BLOCK_HEIGHT=config['BLOCK_HEIGHT'],
+        BLOCK_WIDTH=config['BLOCK_WIDTH'],
+        INV_BASE=-2.0 * math.log(BASE) / head_dim,
+        num_warps=config['num_warps']
+    )
+
+
+
+
 class GPTNeoXPreTrainedModel(PreTrainedModel):
     """
     An abstract class to handle weights initialization and a simple interface for downloading and loading pretrained
@@ -135,34 +229,18 @@ class GPTNeoXAttention(nn.Module):
         # Compute QKV
         # Attention heads [batch, seq_len, hidden_size]
         #   --> [batch, seq_len, (np * 3 * head_size)]
-        qkv = self.query_key_value(hidden_states)
 
-        # [batch, seq_len, (num_heads * 3 * head_size)]
-        #   --> [batch, seq_len, num_heads, 3 * head_size]
-        new_qkv_shape = qkv.size()[:-1] + (self.num_attention_heads, 3 * self.head_size)
-        qkv = qkv.view(*new_qkv_shape)
+        qkv_states = self.query_key_value(hidden_states)
+        qkv_states = qkv_states.view(bsz, q_len, 3, self.num_heads, self.head_dim)
 
-        # [batch, seq_len, num_attention_heads, 3 * head_size] --> 3 [batch, num_attention_heads, seq_len, head_size]
-        query = qkv[..., : self.head_size].permute(0, 2, 1, 3)
-        key = qkv[..., self.head_size : 2 * self.head_size].permute(0, 2, 1, 3)
-        value = qkv[..., 2 * self.head_size :].permute(0, 2, 1, 3)
+        # This updates the query and key states in-place, saving VRAM.
+        triton_rotate_half_(qkv_states[:, :, :2], position_ids)
 
-        # Compute rotary embeddings on rotary_ndims
-        query_rot = query[..., : self.rotary_ndims]
-        query_pass = query[..., self.rotary_ndims :]
-        key_rot = key[..., : self.rotary_ndims]
-        key_pass = key[..., self.rotary_ndims :]
-
-        # Compute token offset for rotary embeddings (when decoding)
-        seq_len = key.shape[-2]
-        offset = 0
-        if has_layer_past:
-            offset = layer_past[0].shape[-2]
-            seq_len += offset
-        cos, sin = self.rotary_emb(value, seq_len=seq_len)
-        query, key = apply_rotary_pos_emb(query_rot, key_rot, cos, sin, offset=offset)
-        query = torch.cat((query, query_pass), dim=-1)
-        key = torch.cat((key, key_pass), dim=-1)
+        query_states, key_states, value_states = torch.split(qkv_states, 1, dim=2)
+        del qkv_states
+        query = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+        key = key_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+        value = value_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
 
         # Cache QKV values
         if has_layer_past:
@@ -693,8 +771,10 @@ class GPTNeoXForCausalLM(GPTNeoXPreTrainedModel):
         self.gpt_neox = GPTNeoXModel(config)
         self.embed_out = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
-        self.early_exit_threshold = 0.8
+        self.early_exit_threshold = 0.7
         self.early_exit_layer = 9999
+        self.early_exit_fallback_iter = 10
+        self.early_exit_iter = 0
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -705,9 +785,14 @@ class GPTNeoXForCausalLM(GPTNeoXPreTrainedModel):
     def set_output_embeddings(self, new_embeddings):
         self.embed_out = new_embeddings
 
-    def set_early_exit_settings(self, threshold, layer):
+    def set_early_exit_settings(self, threshold, layer, fallback_iter = 10):
         self.early_exit_threshold = threshold
         self.early_exit_layer = layer
+        self.early_exit_fallback_iter = fallback_iter
+
+    def prepare_generation_for_early_exit(self)
+        # the first token won't be early exited
+        self.early_exit_iter = self.early_exit_fallback_iter
 
     @add_start_docstrings_to_model_forward(GPT_NEOX_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
     @replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
@@ -767,6 +852,13 @@ class GPTNeoXForCausalLM(GPTNeoXPreTrainedModel):
         layer_skip = self.early_exit_layer
 
         while True:
+            if layer_skip != 9999:
+                if self.early_exit_iter >= self.early_exit_fallback_iter:
+                    # forces the model not to early exit every once in a while. This improves the quality while helping repetition issue
+                    # inspired by Big Little Decoder
+                    self.early_exit_iter = 0
+                    layer_skip = 9999
+
             outputs = self.gpt_neox(
                 input_ids,
                 attention_mask=attention_mask,
@@ -790,9 +882,11 @@ class GPTNeoXForCausalLM(GPTNeoXPreTrainedModel):
             score = torch.softmax(next_tokens_scores, dim=-1)
             score_max = score.max()
             if score_max < self.early_exit_threshold:
-                print(score_max)
+                print("early exit" + score_max)
                 layer_skip = 9999
             else:
+                # early exit triggered
+                self.early_exit_iter = self.early_exit_iter + 1
                 break
 
         lm_loss = None
