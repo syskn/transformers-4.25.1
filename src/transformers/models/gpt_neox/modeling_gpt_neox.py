@@ -234,16 +234,16 @@ class GPTNeoXAttention(nn.Module):
         bsz, q_len, _ = hidden_states.size()
 
         qkv_states = self.query_key_value(hidden_states)
-        qkv_states = qkv_states.view(bsz, q_len, 3, self.num_heads, self.head_dim)
+        qkv_states = qkv_states.view(bsz, q_len, 3, self.num_heads, self.hidden_size)
 
         # This updates the query and key states in-place, saving VRAM.
         triton_rotate_half_(qkv_states[:, :, :2], position_ids)
 
         query_states, key_states, value_states = torch.split(qkv_states, 1, dim=2)
         del qkv_states
-        query = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-        key = key_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-        value = value_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+        query = query_states.view(bsz, q_len, self.num_heads, self.hidden_size).transpose(1, 2)
+        key = key_states.view(bsz, q_len, self.num_heads, self.hidden_size).transpose(1, 2)
+        value = value_states.view(bsz, q_len, self.num_heads, self.hidden_size).transpose(1, 2)
 
         # Cache QKV values
         if has_layer_past:
