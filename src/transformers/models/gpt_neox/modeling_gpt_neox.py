@@ -66,11 +66,11 @@ GPT_NEOX_PRETRAINED_MODEL_ARCHIVE_LIST = [
 
 
 
-import triton
+import triton as trtn
 import triton.language as tl
 
 
-@triton.jit
+@trtn.jit
 def rotate_half_kernel(
         qk_seq_ptr,
         position_ids_ptr,
