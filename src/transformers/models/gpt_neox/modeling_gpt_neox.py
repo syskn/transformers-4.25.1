@@ -195,6 +195,7 @@ class GPTNeoXAttention(nn.Module):
         self.num_attention_heads = config.num_attention_heads
         self.hidden_size = config.hidden_size
         self.head_size = self.hidden_size // self.num_attention_heads
+        self.num_heads = self.num_attention_heads
         self.rotary_ndims = int(self.head_size * config.rotary_pct)
         max_positions = config.max_position_embeddings
         self.register_buffer(
@@ -231,7 +232,7 @@ class GPTNeoXAttention(nn.Module):
         #   --> [batch, seq_len, (np * 3 * head_size)]
 
         bsz, q_len, _ = hidden_states.size()
-        
+
         qkv_states = self.query_key_value(hidden_states)
         qkv_states = qkv_states.view(bsz, q_len, 3, self.num_heads, self.head_dim)
 
