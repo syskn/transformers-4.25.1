@@ -790,7 +790,7 @@ class GPTNeoXForCausalLM(GPTNeoXPreTrainedModel):
         self.early_exit_layer = layer
         self.early_exit_fallback_iter = fallback_iter
 
-    def prepare_generation_for_early_exit(self)
+    def prepare_generation_for_early_exit(self):
         # the first token won't be early exited
         self.early_exit_iter = self.early_exit_fallback_iter
 
