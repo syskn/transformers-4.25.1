@@ -66,11 +66,11 @@ GPT_NEOX_PRETRAINED_MODEL_ARCHIVE_LIST = [
 
 
 
-import triton as trtn
+import triton
 import triton.language as tl
 
 
-@trtn.jit
+@triton.jit
 def rotate_half_kernel(
         qk_seq_ptr,
         position_ids_ptr,
@@ -230,6 +230,8 @@ class GPTNeoXAttention(nn.Module):
         # Attention heads [batch, seq_len, hidden_size]
         #   --> [batch, seq_len, (np * 3 * head_size)]
 
+        bsz, q_len, _ = hidden_states.size()
+        
         qkv_states = self.query_key_value(hidden_states)
         qkv_states = qkv_states.view(bsz, q_len, 3, self.num_heads, self.head_dim)
 
