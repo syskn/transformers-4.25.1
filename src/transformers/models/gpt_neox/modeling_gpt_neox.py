@@ -806,7 +806,7 @@ class GPTNeoXForCausalLM(GPTNeoXPreTrainedModel):
             score = torch.softmax(next_tokens_scores, dim=-1)
             score_max = score.max()
             if score_max < self.early_exit_threshold:
-                print("early exit" + score_max)
+                print("early exit" + str(score_max))
                 layer_skip = 9999
             else:
                 # early exit triggered
