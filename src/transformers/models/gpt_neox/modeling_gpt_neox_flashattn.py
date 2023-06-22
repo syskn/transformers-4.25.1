@@ -65,6 +65,8 @@ GPT_NEOX_PRETRAINED_MODEL_ARCHIVE_LIST = [
 ]
 
 
+
+
 class GPTNeoXPreTrainedModel(PreTrainedModel):
     """
     An abstract class to handle weights initialization and a simple interface for downloading and loading pretrained
@@ -75,7 +77,8 @@ class GPTNeoXPreTrainedModel(PreTrainedModel):
     base_model_prefix = "gpt_neox"
     supports_gradient_checkpointing = True
     _no_split_modules = ["GPTNeoXLayer"]
-
+    _skip_keys_device_placement = "past_key_values"
+    
     def _init_weights(self, module):
         """Initialize the weights"""
         if isinstance(module, nn.Linear):
@@ -693,9 +696,9 @@ class GPTNeoXForCausalLM(GPTNeoXPreTrainedModel):
         self.gpt_neox = GPTNeoXModel(config)
         self.embed_out = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
-        self.early_exit_threshold = 0.7
+        self.early_exit_threshold = 0.6
         self.early_exit_layer = 9999
-        self.early_exit_fallback_iter = 10
+        self.early_exit_fallback_iter = 5
         self.early_exit_iter = 0
 
         # Initialize weights and apply final processing
@@ -712,8 +715,9 @@ class GPTNeoXForCausalLM(GPTNeoXPreTrainedModel):
         self.early_exit_layer = layer
         self.early_exit_fallback_iter = fallback_iter
 
-    def prepare_generation_for_early_exit(self)
-        self.early_exit_iter = 0
+    def prepare_generation_for_early_exit(self):
+        # the first token won't be early exited
+        self.early_exit_iter = self.early_exit_fallback_iter
 
     @add_start_docstrings_to_model_forward(GPT_NEOX_INPUTS_DOCSTRING.format("batch_size, sequence_length"))
     @replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
@@ -803,7 +807,6 @@ class GPTNeoXForCausalLM(GPTNeoXPreTrainedModel):
             score = torch.softmax(next_tokens_scores, dim=-1)
             score_max = score.max()
             if score_max < self.early_exit_threshold:
-                print("early exit" + score_max)
                 layer_skip = 9999
             else:
                 # early exit triggered
